@@ -87,13 +87,14 @@ class SqreamColumn(object):
 # Connection object with sockets and ports and stuff
 
 class SqreamConn(object):
-    def __init__(self, username=None, password=None, database=None, host=None, port=None):
+    def __init__(self, username=None, password=None, database=None, host=None, port=None, clustered=False):
         self._socket = None
         self._user = username
         self._password = password
         self._database = database
         self._host = host
         self._port = port
+        self._clustered = clustered
 
     def set_socket(self, sock):
         self._socket = sock
@@ -112,6 +113,9 @@ class SqreamConn(object):
 
     def set_port(self, port):
         self._port = port
+
+    def set_clustered(self, clustered):
+        self._clustered = clustered
 
     def set_socket_parameters(self, host, port):
         self.set_host(host)
@@ -143,11 +147,13 @@ class SqreamConn(object):
             tcp_ip = ip
         else:
             tcp_ip = TCP_IP
+        self.set_host(tcp_ip)
 
         if port is not None:
             tcp_port = port
         else:
             tcp_port = TCP_PORT
+        self.set_port(tcp_port)
 
         try:
             self._socket.connect((tcp_ip, tcp_port))
@@ -232,6 +238,32 @@ class SqreamConn(object):
         return data_recv
 
     def connect(self, database, username, password):
+        if self._clustered is False:
+            self.connect_unclustered(database, username, password)
+        else:
+            self.connect_clustered(database, username, password)
+
+    def connect_clustered(self, database, username, password):
+        read_len_raw = self.socket_recv(4) # Read 4 bytes to find length of how much to read
+        read_len = unpack('i',read_len_raw)[0]
+        if read_len>15 or read_len<7:
+            raise RuntimeError("Clustered connection requires a length of between 7 and 15, but I got " + str(read_len) + ". Perhaps this connection should be unclustered?")
+        # Read the number of bytes, which is the IP in string format (WHY?????????)
+        ip_addr = self.socket_recv(read_len)
+        # Now read port
+        port_raw = self.socket_recv(4)
+        port = unpack('i',port_raw)[0]
+        if port<1000 or port>65535:
+            raise RuntimeError("Clustered connection requires a proper port, but I got " + str(port) + ".")
+        self.close_connection()
+        self.set_host(ip_addr)
+        self.set_port(port)
+        self.set_clustered(False)
+        self.create_connection(ip_addr,port)
+        self.connect_unclustered(database, username, password)
+
+
+    def connect_unclustered(self, database, username, password):
         cmd_str = '{"connectDatabase":"' + database + '","password":"' + password + '","username":"' + username + '"}'
         self.sndcmd2sqream(cmd_str)
 
@@ -330,10 +362,11 @@ class connector(object):
         # Store the columns from the result
         self._cols = None
         self._query = None
-    def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream'):
+        
+    def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream',clustered=False):
         # No connection yet, create a new one
         if self._sc is None:
-            sc = SqreamConn()
+            sc = SqreamConn(clustered=clustered)
             sc.create_connection(host,port)
             sc.connect(database,user,password)
             self._sc = sc
@@ -388,7 +421,7 @@ class connector(object):
 
 if __name__ == "__main__":
     sc = connector()
-    sc.connect(host='192.168.0.161')
+    sc.connect(host='192.168.0.219',port=3108,clustered=True)
     cols = sc.query("SELECT * FROM foo")
     print sc.cols_names()
     print sc.cols_types()
