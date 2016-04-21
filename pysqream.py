@@ -280,6 +280,10 @@ class SqreamConn(object):
         cmd_str = '{"connectDatabase":"' + database + '","password":"' + password + '","username":"' + username + '"}'
         self.sndcmd2sqream(cmd_str)
 
+    def closeStatement(self):
+        cmd_str = '{"closeStatement" : "closeStatement"}'
+        execute_ = self.sndcmd2sqream(cmd_str)
+
     def execute(self, query_str):
         err = []
         query_str = query_str.replace('\n', ' ').replace('\r', '')
@@ -293,8 +297,7 @@ class SqreamConn(object):
             cmd_str = '{"execute" : "execute"}'
             execute_ = self.sndcmd2sqream(cmd_str)
             if json.loads(execute_)[u'executed'] == u"executed":
-                cmd_str = '{"closeStatement" : "closeStatement"}'
-                execute_ = self.sndcmd2sqream(cmd_str)
+                self.closeStatement()
             pass
         else:
             for idx, col_type in enumerate(queryTypeOut['queryTypeNamed']):
@@ -308,14 +311,20 @@ class SqreamConn(object):
             cmd_str = '{"execute" : "execute"}'
             execute_ = self.sndcmd2sqream(cmd_str)
             # Keep reading while not connection closed
-            while True:
+            keepFetching = True
+            while keepFetching:
                 cmd_str = '{"fetch" : "fetch"}'
                 fetch = self.sndcmd2sqream(cmd_str)
                 fetch = json.loads(fetch)
                 rows_num = fetch["rows"]
                 if rows_num==0:
                     # No content to read
-                    return query_data, err
+                    #return query_data, err
+                    keepFetching = False
+                    self.closeStatement()
+                    break;
+                    #return query_data, err
+
                 # Read to ignore header, which is irrelevant here
                 data = self.socket_recv(HEADER_LENGTH)
                 col_size = list()
