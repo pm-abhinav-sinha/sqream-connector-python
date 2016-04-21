@@ -129,10 +129,12 @@ class SqreamConn(object):
     def open_socket(self):
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(13)
+            self._socket.settimeout(1)
         except socket.error as err:
             self._socket = None
-            print err
+            raise RuntimeError("Error from SQream: "+ err)
+        except:
+            print "Other error"
 
     def close_socket(self):
         if self._socket:
@@ -158,10 +160,11 @@ class SqreamConn(object):
         try:
             self._socket.connect((tcp_ip, tcp_port))
         except socket.error as err:
-            print err
             if self._socket:
                 self.close_connection()
-                exit(0)
+            raise RuntimeError("Couldn't connect to SQream server " + err)
+        except:
+            print "Other error upon open connection"
 
     def close_connection(self):
         self.close_socket()
@@ -182,6 +185,8 @@ class SqreamConn(object):
         unpack_type = typeconversion[col_type]
         if typeconversion[col_type] is not None:
             column_data = map(lambda c: unpack(unpack_type, c)[0], column_data)
+        else:
+            column_data = map(lambda c: c.replace(b'\x00',''), column_data)
         return column_data
 
     def readcolumnbytes(self, column_bytes):
@@ -209,33 +214,37 @@ class SqreamConn(object):
             data_recv = self._socket.recv(param)
             if '{"error"' in data_recv:
                 print repr(data_recv)
-                exit(1)
+                raise RuntimeError("Error from SQream: "+ repr(data_recv))
             # TCP says recv will only read 'up to' param bytes, so keep filling buffer
             remainder = param - len(data_recv)
             while remainder > 0:
                 data_recv += self._socket.recv(remainder)
                 remainder = param - len(data_recv)
         except socket.error as err:
-            print err
             self._socket.close()
             self._socket = None
+            raise RuntimeError("Error from SQream: "+ err)
         return data_recv
 
-    def sndcmd2sqream(self, cmd_str):
+    def sndcmd2sqream(self, cmd_str,close=False):
+        # If close=True, then do not expect to read anything back
         cmd_bytes = self.cmd2bytes(cmd_str)
         try:
             self._socket.send(cmd_bytes)
         except socket.error as err:
-            print err
             self._socket.close()
             self._socket = None
-        data_recv = self.socket_recv(HEADER_LENGTH)
-        ver_num = unpack('b', data_recv[0])[0]
-        if ver_num is not PROTOCOL_VERSION:
-            raise RuntimeError("SQream protocol version mismatch. Expecting " + str(PROTOCOL_VERSION) + ", but got " + str(ver_num) +". Is this a newer/older SQream server?")
-        val_len = unpack('q', data_recv[2:])[0]
-        data_recv = self.socket_recv(val_len)
-        return data_recv
+            raise RuntimeError("Error from SQream: "+ err)
+        if close is False:
+            data_recv = self.socket_recv(HEADER_LENGTH)
+            ver_num = unpack('b', data_recv[0])[0]
+            if ver_num is not PROTOCOL_VERSION:
+                raise RuntimeError("SQream protocol version mismatch. Expecting " + str(PROTOCOL_VERSION) + ", but got " + str(ver_num) +". Is this a newer/older SQream server?")
+            val_len = unpack('q', data_recv[2:])[0]
+            data_recv = self.socket_recv(val_len)
+            return data_recv
+        else:
+            return
 
     def connect(self, database, username, password):
         if self._clustered is False:
@@ -275,9 +284,10 @@ class SqreamConn(object):
         cmd_str = '{"queryTypeOut" : "queryTypeOut"}'
         queryTypeOut = self.sndcmd2sqream(cmd_str)
         queryTypeOut = json.loads(queryTypeOut)
-
         query_data = list()
         if queryTypeOut["queryTypeNamed"] == []:
+            cmd_str = '{"execute" : "execute"}'
+            execute_ = self.sndcmd2sqream(cmd_str,close=True)
             pass
         else:
             for idx, col_type in enumerate(queryTypeOut['queryTypeNamed']):
@@ -362,14 +372,18 @@ class connector(object):
         # Store the columns from the result
         self._cols = None
         self._query = None
-        
+
     def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream',clustered=False):
         # No connection yet, create a new one
         if self._sc is None:
-            sc = SqreamConn(clustered=clustered)
-            sc.create_connection(host,port)
-            sc.connect(database,user,password)
-            self._sc = sc
+            try:
+                sc = SqreamConn(clustered=clustered)
+                sc.create_connection(host,port)
+                sc.connect(database,user,password)
+                self._sc = sc
+            except:
+                # Couldn't connect
+                raise RuntimeError("Couldn't connect to SQream")
             return self._sc
         else:
             raise RuntimeError("Connection already exists. You must close the current connection before creating a new one")
@@ -389,12 +403,17 @@ class connector(object):
         else:
             self._query = query
             try:
-                columns,err = self._sc.execute(query)
-                if err != []:
-                    raise RuntimeError(err)
+                rv = self._sc.execute(query)
+                if rv is None:
+                    return
                 else:
-                    self._cols = columns
-                    return self._cols
+                    # Unpack
+                    columns,err = rv
+                    if err != []:
+                        raise RuntimeError(err)
+                    else:
+                        self._cols = columns
+                        return self._cols
             except:
                 print "Unexpected error"
                 raise
