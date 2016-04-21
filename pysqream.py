@@ -87,7 +87,7 @@ class SqreamColumn(object):
 # Connection object with sockets and ports and stuff
 
 class SqreamConn(object):
-    def __init__(self, username=None, password=None, database=None, host=None, port=None, clustered=False):
+    def __init__(self, username=None, password=None, database=None, host=None, port=None, clustered=False, timeout=15):
         self._socket = None
         self._user = username
         self._password = password
@@ -95,6 +95,7 @@ class SqreamConn(object):
         self._host = host
         self._port = port
         self._clustered = clustered
+        self._timeout = timeout
 
     def set_socket(self, sock):
         self._socket = sock
@@ -126,10 +127,13 @@ class SqreamConn(object):
         self.set_password(password)
         self.set_database(database)
 
+    def set_socket_timeout(self, timeout):
+        self._timeout = timeout
+
     def open_socket(self):
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(1)
+            self._socket.settimeout(self._timeout)
         except socket.error as err:
             self._socket = None
             raise RuntimeError("Error from SQream: "+ err)
@@ -287,7 +291,10 @@ class SqreamConn(object):
         query_data = list()
         if queryTypeOut["queryTypeNamed"] == []:
             cmd_str = '{"execute" : "execute"}'
-            execute_ = self.sndcmd2sqream(cmd_str,close=True)
+            execute_ = self.sndcmd2sqream(cmd_str)
+            if json.loads(execute_)[u'executed'] == u"executed":
+                cmd_str = '{"closeStatement" : "closeStatement"}'
+                execute_ = self.sndcmd2sqream(cmd_str)
             pass
         else:
             for idx, col_type in enumerate(queryTypeOut['queryTypeNamed']):
@@ -373,11 +380,11 @@ class connector(object):
         self._cols = None
         self._query = None
 
-    def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream',clustered=False):
+    def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream',clustered=False,timeout=15):
         # No connection yet, create a new one
         if self._sc is None:
             try:
-                sc = SqreamConn(clustered=clustered)
+                sc = SqreamConn(clustered=clustered,timeout=timeout)
                 sc.create_connection(host,port)
                 sc.connect(database,user,password)
                 self._sc = sc
@@ -420,28 +427,33 @@ class connector(object):
     def cols_data(self,cols=None):
         if cols==None:
             cols = self._cols
-        return map(lambda c: c.get_column_data(),cols)
+        try:
+            return map(lambda c: c.get_column_data(),cols)
+        except:
+            raise RuntimeError("Couldn't get column data from current dataset/")
     def cols_names(self,cols=None):
         if cols==None:
+            # Assign cols from object if not specified
             cols = self._cols
+        if cols == None:
+            # Argh it's still null:
+            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
         return map(lambda c: c.get_column_name(),cols)
+
     def cols_types(self,cols=None):
         if cols==None:
             cols = self._cols
+        if cols == None:
+            # Argh it's still null:
+            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
         return map(lambda c: c.get_type_name(),cols)
 
     def cols_to_rows(self,cols=None):
         # Transpose the columns into rows
         if cols==None:
             cols = self._cols
+        if cols == None:
+            # Argh it's still null:
+            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
         cursor = self.cols_data(cols)
         return map(list, zip(*cursor))
-
-
-if __name__ == "__main__":
-    sc = connector()
-    sc.connect(host='192.168.0.219',port=3108,clustered=True)
-    cols = sc.query("SELECT * FROM foo")
-    print sc.cols_names()
-    print sc.cols_types()
-    print sc.cols_to_rows()
