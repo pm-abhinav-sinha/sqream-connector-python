@@ -2,7 +2,7 @@ import socket
 from struct import pack, unpack
 import json
 import atexit
-
+from datetime import date, datetime
 """
 Python3 connector for SQream DB
 This is a pre-alpha connector. It has not been thoroughly tested, but should work with SQream v1.11
@@ -29,6 +29,46 @@ typeconversion = {"ftInt": "i",
                   "ftVarchar": None
                   }
 
+
+def int_to_date(d):
+    y = int((10000 * d + 14780) // 3652425)
+    ddd = int(d - (y * 365 + y // 4 - y // 100 + y // 400))
+    if (ddd < 0):
+        y -= 1
+        ddd = int(d - (y * 365 + y // 4 - y // 100 + y // 400))
+    mi = int((52 + 100 * ddd) // 3060)
+    yyyy = int((y + (mi + 2) // 12))
+    mm = int(((mi + 2) % 12 + 1))
+    dd = int((ddd - (mi * 306 + 5) // 10 + 1))
+    return date(yyyy,mm,dd)
+
+def long_to_datetime(dts):
+    u = (dts>>32) & 0xffff
+    l = dts & 0xffff
+    d = int_to_date(u)
+
+    msec = int(l) % 1000
+    l //= 1000
+    sec  = l % 60
+    l //= 60
+    min  = l % 60
+    l //= 60
+    hour = int(l)
+
+    return datetime(d.year,d.month,d.day,)
+
+def conv_data_type(type, data):
+    if type == "ftDate":
+        unpack_type = typeconversion[type]
+        d = unpack(unpack_type, data)[0]
+        return int_to_date(d)
+    elif type == "ftDateTime":
+        unpack_type = typeconversion[type]
+        dt = unpack(unpack_type, data)[0]
+        return long_to_datetime(dt)
+    else:
+        unpack_type = typeconversion[type]
+        return unpack(unpack_type, data)[0]
 
 # Class describing column metadata
 class SqreamColumn(object):
@@ -192,11 +232,9 @@ class SqreamConn(object):
             ind.append(idx)
         return ind
 
-    @staticmethod
-    def bytes2vals(col_type, column_data):
-        unpack_type = typeconversion[col_type]
+    def bytes2vals(self, col_type, column_data):
         if typeconversion[col_type] is not None:
-            column_data = list(map(lambda c: unpack(unpack_type, c)[0], column_data))
+            column_data = list(map(lambda c: conv_data_type(col_type, c), column_data))
         else:
             # print(column_data)
             column_data = list(map(lambda c: c.replace(b'\x00', b''), column_data))
@@ -385,6 +423,7 @@ class SqreamConn(object):
 
                     col_data.append_column_data(column_data)
             return tuple(query_data), err
+
 
 
 # This class should be used to create a connection
