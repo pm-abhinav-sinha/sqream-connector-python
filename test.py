@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     # Column names. I am not passing q1 explicitly...
 
-    print sc.cols_names()
+    print (sc.cols_names())
     # Column types - one of
     #  ftUByte - tinyint
     #  ftShort - smallint
@@ -50,9 +50,9 @@ if __name__ == "__main__":
     #  ftDate - Date
     #  ftDateTime - DateTime/Timestamp
     #  ftVarchar - VarChar
-    print sc.cols_types()
+    print (sc.cols_types())
     # Print the result as rows of data:
-    print sc.cols_to_rows()
+    print (sc.cols_to_rows())
     # Finally, drop the table we created
     #try:
     #    sc.query("drop table test")
