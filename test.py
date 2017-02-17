@@ -1,5 +1,5 @@
 
-import pysqream as sq
+import pysqream3 as sq
 
 if __name__ == "__main__":
     sc = sq.connector()
@@ -9,18 +9,19 @@ if __name__ == "__main__":
                ,user='sqream'
                ,password='sqream'
                ,port=5000
-               ,timeout=15) # You can set the timeout to be longer if desired
+               ,timeout=15,
+              clustered=True) # You can set the timeout to be longer if desired
 
     # It is good practice to surround the queries in error handling Try/Except...
-    try:
+    #try:
         # The result type for the below should be "None", because they are
         # statements, not queries...
 
-        sc.query("create table test(x int not null)")
-        sc.query("insert into test values (1),(2),(3),(4)")
+        #sc.query("create table test(x int not null)")
+        #sc.query("insert into test values (1),(2),(3),(4)")
 
-    except:
-        print "Couldn't create a table and insert values..."
+    #except:
+    #    print "Couldn't create a table and insert values..."
 
     # Here, the result won't be None, because we are expecting results...
     # The sc object will always contain the last result columns, so we don't
@@ -53,13 +54,13 @@ if __name__ == "__main__":
     # Print the result as rows of data:
     print sc.cols_to_rows()
     # Finally, drop the table we created
-    try:
-        sc.query("drop table test")
-    except:
-        print "Couldn't drop table"
+    #try:
+    #    sc.query("drop table test")
+    #except:
+    #    print "Couldn't drop table"
 
     # And close the connection
-    sc.close()
+    #sc.close()
 
 # Other functions you may use:
 #  sc.last_query() - returns the string of the last query/statement executed
