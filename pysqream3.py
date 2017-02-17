@@ -341,7 +341,7 @@ class SqreamConn(object):
         query_data = list()
 
         query_str = query_str.replace('\n', ' ').replace('\r', '')
-        cmd_str = '{"prepareStatement":' + '"' + query_str + '","chunkSize":10000}'
+        cmd_str = '{"prepareStatement":' + '"' + query_str.replace('"', '\\"') + '","chunkSize":10000}'
         res1 = self.sndcmd2sqream(cmd_str)
 
         cmd_str = '{"queryTypeOut" : "queryTypeOut"}'
