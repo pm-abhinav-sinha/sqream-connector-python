@@ -60,7 +60,7 @@ if __name__ == "__main__":
     #    print "Couldn't drop table"
 
     # And close the connection
-    #sc.close()
+    sc.close()
 
 # Other functions you may use:
 #  sc.last_query() - returns the string of the last query/statement executed
