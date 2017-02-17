@@ -3,6 +3,8 @@ from struct import pack, unpack
 import json
 import atexit
 from datetime import date, datetime
+from symbol import except_clause
+
 """
 Python3 connector for SQream DB
 This is a pre-alpha connector. It has not been thoroughly tested, but should work with SQream v1.11
@@ -236,7 +238,6 @@ class SqreamConn(object):
         if typeconversion[col_type] is not None:
             column_data = list(map(lambda c: conv_data_type(col_type, c), column_data))
         else:
-            # print(column_data)
             column_data = list(map(lambda c: c.replace(b'\x00', b''), column_data))
             assert isinstance(column_data, list)
             column_data = list(map(lambda x: x.rstrip(), column_data))
@@ -258,7 +259,7 @@ class SqreamConn(object):
     def cmd2bytes(cmd_str):
         cmd_bytes_1 = bytearray([2])
         cmd_bytes_2 = bytearray([1])
-        cmd_bytes_4 = bytes(cmd_str, 'ascii')
+        cmd_bytes_4 = bytes(str(cmd_str), 'ascii')
         cmd_bytes_3 = pack('q', len(cmd_bytes_4))
         cmd_bytes = cmd_bytes_1 + cmd_bytes_2 + cmd_bytes_3 + cmd_bytes_4
         return cmd_bytes
@@ -337,16 +338,21 @@ class SqreamConn(object):
 
     def execute(self, query_str):
         err = []
+        query_data = list()
+
         query_str = query_str.replace('\n', ' ').replace('\r', '')
         cmd_str = '{"prepareStatement":' + '"' + query_str + '","chunkSize":10000}'
-        self.sndcmd2sqream(cmd_str)
+        res1 = self.sndcmd2sqream(cmd_str)
+
         cmd_str = '{"queryTypeOut" : "queryTypeOut"}'
         queryTypeOut = self.sndcmd2sqream(cmd_str)
         queryTypeOut = json.loads(queryTypeOut.decode("utf-8"))
-        query_data = list()
         if not queryTypeOut["queryTypeNamed"]:
             cmd_str = '{"execute" : "execute"}'
-            self.sndcmd2sqream(cmd_str, close=True)
+            self.sndcmd2sqream(cmd_str)
+            self.sndcmd2sqream('{"closeStatement":"closeStatement"}')
+            return tuple(query_data), err
+
             pass
         else:
             for idx, col_type in enumerate(queryTypeOut['queryTypeNamed']):
@@ -358,7 +364,7 @@ class SqreamConn(object):
                 sq_col.set_nullable(queryTypeOut['queryTypeNamed'][idx]['nullable'])
                 query_data.append(sq_col)
             cmd_str = '{"execute" : "execute"}'
-            execute_ = self.sndcmd2sqream(cmd_str)
+            self.sndcmd2sqream(cmd_str)
             # Keep reading while not connection closed
             while True:
                 cmd_str = '{"fetch" : "fetch"}'
@@ -367,6 +373,7 @@ class SqreamConn(object):
                 rows_num = fetch["rows"]
                 if rows_num == 0:
                     # No content to read
+                    res2 = self.sndcmd2sqream('{"closeStatement":"closeStatement"}')
                     return tuple(query_data), err
                 # Read to ignore header, which is irrelevant here
                 data = self.socket_recv(self.HEADER_LEN)
@@ -422,8 +429,6 @@ class SqreamConn(object):
                         raise RuntimeError("Column data encountered malformed column during fetch")
 
                     col_data.append_column_data(column_data)
-            return tuple(query_data), err
-
 
 
 # This class should be used to create a connection
@@ -484,29 +489,40 @@ class connector(object):
                     else:
                         self._cols = columns
                         return self._cols
-            except:
-                print("Unexpected error")
-                raise
+            except BaseException as e:
+                raise RuntimeError("Unexpected error while running statement: " + str(e))
 
     def cols_data(self, cols=None):
         if cols == None:
             cols = self._cols
+        if cols == None:
+            raise RuntimeError("Last query did not return a result")
+
         return list(map(lambda c: c.get_column_data(), cols))
 
     def cols_names(self, cols=None):
         if cols == None:
             cols = self._cols
+        if cols == None:
+            raise RuntimeError("Last query did not return a result")
+
         return list(map(lambda c: c.get_column_name(), cols))
 
     def cols_types(self, cols=None):
         if cols == None:
             cols = self._cols
+        if cols == None:
+            raise RuntimeError("Last query did not return a result")
+
         return list(map(lambda c: c.get_type_name(), cols))
 
     def cols_to_rows(self, cols=None):
         # Transpose the columns into rows
         if cols == None:
             cols = self._cols
+        if cols == None:
+            raise RuntimeError("Last query did not return a result")
+
         cursor = self.cols_data(cols)
         return list(map(tuple, zip(*cursor)))
 
@@ -514,10 +530,8 @@ class connector(object):
 if __name__ == "__main__":
     sc = connector()
     atexit.register(sc.close)
-    sc.connect(host='192.168.0.186', database='faa', user='sqream', password='sqream', port=5000, timeout=15)
-    qr = sc.query("select top 5 * from flightscore")
-
+    sc.connect(host='127.0.0.1', database='db', user='user', password='password', port=5000, timeout=15)
+    qr = sc.query("select top 5 * from t")
     print(sc.cols_names())
     print(sc.cols_types())
     print(sc.cols_to_rows())
-    sc.close()
