@@ -1,15 +1,20 @@
+from __future__ import absolute_import, division, print_function, unicode_literals
+import atexit
+from datetime import date, datetime
 
 import pysqream as sq
 
 if __name__ == "__main__":
     sc = sq.connector()
 
-    sc.connect(host='192.168.0.161'
-               ,database='master'
-               ,user='sqream'
-               ,password='sqream'
-               ,port=5000
-               ,timeout=15) # You can set the timeout to be longer if desired
+    atexit.register(sc.close)
+    sc.connect(host='hostname', # Server host
+               database='database', # Database to connect to
+               user='username', # Username
+               password='password', # Password
+               clustered=False, # Clustered or unclustered connection
+               port=5000, # Server port
+               timeout=15)
 
     # It is good practice to surround the queries in error handling Try/Except...
     try:
@@ -20,7 +25,7 @@ if __name__ == "__main__":
         sc.query("insert into test values (1),(2),(3),(4)")
 
     except:
-        print "Couldn't create a table and insert values..."
+        print("Couldn't create a table and insert values...")
 
     # Here, the result won't be None, because we are expecting results...
     # The sc object will always contain the last result columns, so we don't
@@ -37,7 +42,7 @@ if __name__ == "__main__":
 
     # Column names. I am not passing q1 explicitly...
 
-    print sc.cols_names()
+    print(sc.cols_names())
     # Column types - one of
     #  ftUByte - tinyint
     #  ftShort - smallint
@@ -49,14 +54,14 @@ if __name__ == "__main__":
     #  ftDate - Date
     #  ftDateTime - DateTime/Timestamp
     #  ftVarchar - VarChar
-    print sc.cols_types()
+    print(sc.cols_types())
     # Print the result as rows of data:
-    print sc.cols_to_rows()
+    print(sc.cols_to_rows())
     # Finally, drop the table we created
     try:
         sc.query("drop table test")
     except:
-        print "Couldn't drop table"
+        print("Couldn't drop table")
 
     # And close the connection
     sc.close()
