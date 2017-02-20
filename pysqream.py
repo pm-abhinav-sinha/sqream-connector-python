@@ -1,32 +1,107 @@
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
+Python2/3 connector for SQream DB
+
+This is a pre-alpha connector. It has not been thoroughly tested,
+but should work with SQream v1.12
+
+Usage example:
+    Import the `pysqream.py` file into your own codebase::
+
+        import pysqream as sq
+        import atexit
+        from datetime import date, datetime
+        
+        
+        sc = sq.connector()
+        atexit.register(sc.close)
+        sc.connect(host='<ip>', database='<database>', user='<username>', password='<password>',
+                    port=<server port>, clustered=<true/false - based on your installation>, timeout=<socket timeout>)
+        qr = sc.query("SELECT x,y FROM t")
+        print(sc.cols_names())
+        print(sc.cols_types())
+        print(sc.cols_to_rows())
+
+
+.. _Python2/3 connector for SQream DB - GitHub:
+https://github.com/SQream/sqream-connector-python
+"""
+
+
 
 import socket
 from struct import pack, unpack
 import json
+import atexit
+from datetime import date, datetime
+import sys
 
-# For interface, see bottom
-
-
-# Default constants
-# Change protocol version with new versions of SQream as necessary
+# Defaults constants
 PROTOCOL_VERSION = 4
+DEFAULT_HOSTNAME = "127.0.0.1"
+DEFAULT_SQREAM_PORT = 5000
+DEFAULT_BUFFER_SIZE = 4096
+DEFAULT_NETWORK_CHUNKSIZE = 10000
 
-TCP_IP = '127.0.0.1'
-TCP_PORT = 5000
-BUFFER_SIZE = 4096
-HEADER_LENGTH = 10
+"""
+Conversion methods from SQream protocol to Python
+"""
 
-# Type conversions for unpack
-typeconversion = {"ftInt": "i",
-                  "ftUByte": "b",
-                  "ftShort": "h",
-                  "ftLong": "q",
-                  "ftFloat": "f",
-                  "ftBool": "?",
-                  "ftDouble": "d",
-                  "ftDate": "i",
-                  "ftDateTime": "q",
-                  "ftVarchar": None
-                  }
+# 4b int to Date
+def int_to_date(d):
+    y = int((10000 * d + 14780) // 3652425)
+    ddd = int(d - (y * 365 + y // 4 - y // 100 + y // 400))
+    if (ddd < 0):
+        y -= 1
+        ddd = int(d - (y * 365 + y // 4 - y // 100 + y // 400))
+    mi = int((52 + 100 * ddd) // 3060)
+    yyyy = int((y + (mi + 2) // 12))
+    mm = int(((mi + 2) % 12 + 1))
+    dd = int((ddd - (mi * 306 + 5) // 10 + 1))
+    return date(yyyy, mm, dd)
+
+# 8b int to Timestamp
+def long_to_datetime(dts):
+    u = (dts >> 32) & 0xffff
+    l = dts & 0xffff
+    d = int_to_date(u)
+    msec = int(l) % 1000
+    l //= 1000
+    sec = l % 60
+    l //= 60
+    min = l % 60
+    l //= 60
+    hour = int(l)
+    return datetime(d.year, d.month, d.day, )
+
+# Conversion helper to deal with dates
+def conv_data_type(type, data):
+    # Type conversions for unpack
+    typeconversion = {"ftInt": "i",
+                      "ftUByte": "b",
+                      "ftShort": "h",
+                      "ftLong": "q",
+                      "ftFloat": "f",
+                      "ftBool": "?",
+                      "ftDouble": "d",
+                      "ftDate": "i",
+                      "ftDateTime": "q",
+                      "ftVarchar": None
+                      }
+
+    if type == "ftDate":
+        unpack_type = typeconversion[type]
+        d = unpack(unpack_type, data)[0]
+        return int_to_date(d)
+    elif type == "ftDateTime":
+        unpack_type = typeconversion[type]
+        dt = unpack(unpack_type, data)[0]
+        return long_to_datetime(dt)
+    else:
+        unpack_type = typeconversion[type]
+        return unpack(unpack_type, data)[0]
+
 
 # Class describing column metadata
 class SqreamColumn(object):
@@ -63,7 +138,7 @@ class SqreamColumn(object):
     def get_column_size(self):
         return self._column_size
 
-    def set_isTrueVarChar(self,isTrueVarChar):
+    def set_isTrueVarChar(self, isTrueVarChar):
         self._isTrueVarChar = isTrueVarChar
 
     def get_isTrueVarChar(self):
@@ -84,6 +159,7 @@ class SqreamColumn(object):
     def get_column_data(self):
         return self._column_data
 
+
 # Connection object with sockets and ports and stuff
 
 class SqreamConn(object):
@@ -97,7 +173,10 @@ class SqreamConn(object):
         self._clustered = clustered
         self._timeout = timeout
 
+    HEADER_LEN = 10
+
     def set_socket(self, sock):
+        assert isinstance(sock, (object, socket))
         self._socket = sock
 
     def set_user(self, username):
@@ -118,47 +197,35 @@ class SqreamConn(object):
     def set_clustered(self, clustered):
         self._clustered = clustered
 
-    def set_socket_parameters(self, host, port):
-        self.set_host(host)
-        self.set_port(port)
-
-    def set_connection_parameters(self, username, password, database):
-        self.set_user(username)
-        self.set_password(password)
-        self.set_database(database)
-
-    def set_socket_timeout(self, timeout):
-        self._timeout = timeout
-
     def open_socket(self):
         try:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.set_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
             self._socket.settimeout(self._timeout)
         except socket.error as err:
-            self._socket = None
-            raise RuntimeError("Error from SQream: "+ err)
+            self.set_socket(None)
+            raise RuntimeError("Error from SQream: " + str(err))
         except:
-            print "Other error"
+            raise RuntimeError("Other error")
 
     def close_socket(self):
         if self._socket:
             try:
                 self._socket.close()
-                self._socket = None
-            except(socket.error,AttributeError):
+                self.set_socket(None)
+            except(socket.error, AttributeError):
                 pass
 
     def open_connection(self, ip=None, port=None):
         if ip is not None:
             tcp_ip = ip
         else:
-            tcp_ip = TCP_IP
+            tcp_ip = DEFAULT_HOSTNAME
         self.set_host(tcp_ip)
 
         if port is not None:
             tcp_port = port
         else:
-            tcp_port = TCP_PORT
+            tcp_port = DEFAULT_SQREAM_PORT
         self.set_port(tcp_port)
 
         try:
@@ -166,9 +233,9 @@ class SqreamConn(object):
         except socket.error as err:
             if self._socket:
                 self.close_connection()
-            raise RuntimeError("Couldn't connect to SQream server " + err)
+            raise RuntimeError("Couldn't connect to SQream server - " + str(err))
         except:
-            print "Other error upon open connection"
+            print("Other error upon open connection")
 
     def close_connection(self):
         self.close_socket()
@@ -177,7 +244,8 @@ class SqreamConn(object):
         self.open_socket()
         self.open_connection(ip, port)
 
-    def len2ind(self, lens):
+    @staticmethod
+    def len2ind(lens):
         ind = []
         idx = 0
         for i in lens:
@@ -186,29 +254,31 @@ class SqreamConn(object):
         return ind
 
     def bytes2vals(self, col_type, column_data):
-        unpack_type = typeconversion[col_type]
-        if typeconversion[col_type] is not None:
-            column_data = map(lambda c: unpack(unpack_type, c)[0], column_data)
+        if col_type is not "ftVarchar":
+            column_data = list(map(lambda c: conv_data_type(col_type, c), column_data))
         else:
-            column_data = map(lambda c: c.replace(b'\x00',''), column_data)
+            column_data = list(map(lambda c: c.replace(b'\x00', b''), column_data))
+            assert isinstance(column_data, list)
+            column_data = list(map(lambda x: x.rstrip(), column_data))
         return column_data
 
     def readcolumnbytes(self, column_bytes):
         chunks = []
         bytes_rcvd = 0
         while bytes_rcvd < column_bytes:
-            chunk = self.socket_recv(min(column_bytes - bytes_rcvd, BUFFER_SIZE))
-            if chunk == '':
+            chunk = self.socket_recv(min(column_bytes - bytes_rcvd, DEFAULT_BUFFER_SIZE))
+            if chunk == b'':
                 raise RuntimeError("socket connection broken")
             chunks.append(chunk)
             bytes_rcvd += len(chunk)
-        column_data = ''.join(chunks)
+        column_data = b''.join(chunks)
         return column_data
 
-    def cmd2bytes(self, cmd_str):
+    @staticmethod
+    def cmd2bytes(cmd_str):
         cmd_bytes_1 = bytearray([2])
         cmd_bytes_2 = bytearray([1])
-        cmd_bytes_4 = bytearray(cmd_str, 'ascii')
+        cmd_bytes_4 = cmd_str.encode('ascii')
         cmd_bytes_3 = pack('q', len(cmd_bytes_4))
         cmd_bytes = cmd_bytes_1 + cmd_bytes_2 + cmd_bytes_3 + cmd_bytes_4
         return cmd_bytes
@@ -216,34 +286,39 @@ class SqreamConn(object):
     def socket_recv(self, param):
         try:
             data_recv = self._socket.recv(param)
-            if '{"error"' in data_recv:
-                print repr(data_recv)
-                raise RuntimeError("Error from SQream: "+ repr(data_recv))
+            if b'{"error"' in data_recv:
+                raise RuntimeError("Error from SQream: " + repr(data_recv))
             # TCP says recv will only read 'up to' param bytes, so keep filling buffer
             remainder = param - len(data_recv)
             while remainder > 0:
                 data_recv += self._socket.recv(remainder)
                 remainder = param - len(data_recv)
         except socket.error as err:
-            self._socket.close()
-            self._socket = None
-            raise RuntimeError("Error from SQream: "+ err)
+            self.close_connection()
+            self.set_socket(None)
+            raise RuntimeError("Error from SQream: " + str(err))
+        except RuntimeError as e:
+            raise RuntimeError(e)
+        except:
+            raise RuntimeError("Other error while receiving from socket")
         return data_recv
 
-    def sndcmd2sqream(self, cmd_str,close=False):
+    def exchange(self, cmd_str, close=False):
         # If close=True, then do not expect to read anything back
         cmd_bytes = self.cmd2bytes(cmd_str)
         try:
             self._socket.send(cmd_bytes)
         except socket.error as err:
-            self._socket.close()
-            self._socket = None
-            raise RuntimeError("Error from SQream: "+ err)
+            self.close_connection()
+            self.set_socket(None)
+            raise RuntimeError("Error from SQream: " + str(err))
         if close is False:
-            data_recv = self.socket_recv(HEADER_LENGTH)
-            ver_num = unpack('b', data_recv[0])[0]
+            data_recv = self.socket_recv(self.HEADER_LEN)
+            ver_num = unpack('b', bytearray([data_recv[0]]))[0]
             if ver_num is not PROTOCOL_VERSION:
-                raise RuntimeError("SQream protocol version mismatch. Expecting " + str(PROTOCOL_VERSION) + ", but got " + str(ver_num) +". Is this a newer/older SQream server?")
+                raise RuntimeError(
+                    "SQream protocol version mismatch. Expecting " + str(PROTOCOL_VERSION) + ", but got " + str(
+                        ver_num) + ". Is this a newer/older SQream server?")
             val_len = unpack('q', data_recv[2:])[0]
             data_recv = self.socket_recv(val_len)
             return data_recv
@@ -257,76 +332,72 @@ class SqreamConn(object):
             self.connect_clustered(database, username, password)
 
     def connect_clustered(self, database, username, password):
-        read_len_raw = self.socket_recv(4) # Read 4 bytes to find length of how much to read
-        read_len = unpack('i',read_len_raw)[0]
-        if read_len>15 or read_len<7:
-            raise RuntimeError("Clustered connection requires a length of between 7 and 15, but I got " + str(read_len) + ". Perhaps this connection should be unclustered?")
+        read_len_raw = self.socket_recv(4)  # Read 4 bytes to find length of how much to read
+        read_len = unpack('i', read_len_raw)[0]
+        if read_len > 15 or read_len < 7:
+            raise RuntimeError("Clustered connection requires a length of between 7 and 15, but I got " + str(
+                read_len) + ". Perhaps this connection should be unclustered?")
         # Read the number of bytes, which is the IP in string format (WHY?????????)
         ip_addr = self.socket_recv(read_len)
         # Now read port
         port_raw = self.socket_recv(4)
-        port = unpack('i',port_raw)[0]
-        if port<1000 or port>65535:
-            raise RuntimeError("Clustered connection requires a proper port, but I got " + str(port) + ".")
+        port = unpack('i', port_raw)[0]
+        if port < 1000 or port > 65535:
+            raise RuntimeError("Port out of bounds (1000 - 65535): " + str(port) + ".")
         self.close_connection()
         self.set_host(ip_addr)
         self.set_port(port)
         self.set_clustered(False)
-        self.create_connection(ip_addr,port)
+        self.create_connection(ip_addr, port)
         self.connect_unclustered(database, username, password)
 
-
     def connect_unclustered(self, database, username, password):
-        cmd_str = '{"connectDatabase":"' + database + '","password":"' + password + '","username":"' + username + '"}'
-        self.sndcmd2sqream(cmd_str)
-
-    def closeStatement(self):
-        cmd_str = '{"closeStatement" : "closeStatement"}'
-        execute_ = self.sndcmd2sqream(cmd_str)
+        cmd_str = """{{"connectDatabase":"{0}","password":"{1}","username":"{2}"}}""".format(database.replace('"', '\\"')
+                                                                                             ,password.replace('"', '\\"')
+                                                                                             ,username.replace('"', '\\"'))
+        self.exchange(cmd_str)
 
     def execute(self, query_str):
         err = []
-        query_str = query_str.replace('\n', ' ').replace('\r', '')
-        cmd_str = '{"prepareStatement":' + '"' + query_str + '","chunkSize":10000}'
-        prepareStatement = self.sndcmd2sqream(cmd_str)
-        cmd_str = '{"queryTypeOut" : "queryTypeOut"}'
-        queryTypeOut = self.sndcmd2sqream(cmd_str)
-        queryTypeOut = json.loads(queryTypeOut)
         query_data = list()
-        if queryTypeOut["queryTypeNamed"] == []:
+
+        query_str = query_str.replace('\n', ' ').replace('\r', '')
+        cmd_str = """{{"prepareStatement":"{0}","chunkSize":{1}}}""".format(query_str.replace('"', '\\"'),str(DEFAULT_NETWORK_CHUNKSIZE))
+        res1 = self.exchange(cmd_str)
+
+        cmd_str = '{"queryTypeOut" : "queryTypeOut"}'
+        query_type_out = self.exchange(cmd_str)
+        query_type_out = json.loads(query_type_out.decode("utf-8"))
+        if not query_type_out["queryTypeNamed"]:
             cmd_str = '{"execute" : "execute"}'
-            execute_ = self.sndcmd2sqream(cmd_str)
-            if json.loads(execute_)[u'executed'] == u"executed":
-                self.closeStatement()
+            self.exchange(cmd_str)
+            self.exchange('{"closeStatement":"closeStatement"}')
+            return tuple(query_data), err
+
             pass
         else:
-            for idx, col_type in enumerate(queryTypeOut['queryTypeNamed']):
+            for idx, col_type in enumerate(query_type_out['queryTypeNamed']):
                 sq_col = SqreamColumn()
-                sq_col.set_type_name(queryTypeOut['queryTypeNamed'][idx]['type'][0])
-                sq_col.set_type_size(queryTypeOut['queryTypeNamed'][idx]['type'][1])
-                sq_col.set_column_name(queryTypeOut['queryTypeNamed'][idx]['name'])
-                sq_col.set_isTrueVarChar(queryTypeOut['queryTypeNamed'][idx]['isTrueVarChar'])
-                sq_col.set_nullable(queryTypeOut['queryTypeNamed'][idx]['nullable'])
+                sq_col.set_type_name(query_type_out['queryTypeNamed'][idx]['type'][0])
+                sq_col.set_type_size(query_type_out['queryTypeNamed'][idx]['type'][1])
+                sq_col.set_column_name(query_type_out['queryTypeNamed'][idx]['name'])
+                sq_col.set_isTrueVarChar(query_type_out['queryTypeNamed'][idx]['isTrueVarChar'])
+                sq_col.set_nullable(query_type_out['queryTypeNamed'][idx]['nullable'])
                 query_data.append(sq_col)
             cmd_str = '{"execute" : "execute"}'
-            execute_ = self.sndcmd2sqream(cmd_str)
+            self.exchange(cmd_str)
             # Keep reading while not connection closed
-            keepFetching = True
-            while keepFetching:
+            while True:
                 cmd_str = '{"fetch" : "fetch"}'
-                fetch = self.sndcmd2sqream(cmd_str)
-                fetch = json.loads(fetch)
+                fetch = self.exchange(cmd_str)
+                fetch = json.loads(fetch.decode("utf-8"))
                 rows_num = fetch["rows"]
-                if rows_num==0:
+                if rows_num == 0:
                     # No content to read
-                    #return query_data, err
-                    keepFetching = False
-                    self.closeStatement()
-                    break;
-                    #return query_data, err
-
+                    res2 = self.exchange('{"closeStatement":"closeStatement"}')
+                    return tuple(query_data), err
                 # Read to ignore header, which is irrelevant here
-                data = self.socket_recv(HEADER_LENGTH)
+                data = self.socket_recv(self.HEADER_LEN)
                 col_size = list()
                 idx_first = 0
                 idx_last = 1
@@ -346,15 +417,15 @@ class SqreamConn(object):
                                        range(0, col_data.get_column_size()[0], col_data.get_type_size())]
                         column_data = self.bytes2vals(col_data.get_type_name(), column_data)
 
-
                     elif col_data.get_isTrueVarChar() == False and col_data.get_nullable() == True:
                         column_data = self.readcolumnbytes(col_data.get_column_size()[0])
-                        is_null = map(lambda c: unpack('b', c)[0], column_data)
-                        column_data = self.readcolumnbytes(col_data.get_column_size()[1])  # ,col_data.get_type_size(), None, is_null)
+                        is_null = map(lambda c: unpack('b', bytes([c]))[0], column_data)
+                        column_data = self.readcolumnbytes(
+                            col_data.get_column_size()[1])  # ,col_data.get_type_size(), None, is_null)
                         column_data = [column_data[i:i + col_data.get_type_size()] for i in
                                        range(0, col_data.get_column_size()[1], col_data.get_type_size())]
                         column_data = self.bytes2vals(col_data.get_type_name(), column_data)
-                        column_data = [column_data[idx] if elem == 0 else "\N" for idx, elem in enumerate(is_null)]
+                        column_data = [column_data[idx] if elem == 0 else u"\\N" for idx, elem in enumerate(is_null)]
 
                     elif col_data.get_isTrueVarChar() == True and col_data.get_nullable() == False:
                         column_data = self.readcolumnbytes(col_data.get_column_size()[0])
@@ -367,18 +438,19 @@ class SqreamConn(object):
 
                     elif col_data.get_isTrueVarChar() == True and col_data.get_nullable() == True:
                         column_data = self.readcolumnbytes(col_data.get_column_size()[0])
-                        is_null = map(lambda c: unpack('b', c)[0], column_data)
-
+                        is_null = map(lambda c: unpack('b', bytes([c]))[0], column_data)
                         column_data = self.readcolumnbytes(col_data.get_column_size()[1])
                         column_data = [column_data[i:i + 4] for i in range(0, col_data.get_column_size()[1], 4)]
                         nvarchar_lens = map(lambda c: unpack('i', c)[0], column_data)
                         nvarchar_inds = self.len2ind(nvarchar_lens)
                         column_data = self.readcolumnbytes(col_data.get_column_size()[2])
-                        column_data = [column_data[i:j] if k == 0 else "\N" for i, j, k in
+                        column_data = [column_data[i:j] if k == 0 else u"\\N" for i, j, k in
                                        zip([0] + nvarchar_inds[:-1], nvarchar_inds[:-1] + [None], is_null)]
+                    else:
+                        raise RuntimeError("Column data encountered malformed column during fetch")
 
                     col_data.append_column_data(column_data)
-            return query_data, err
+
 
 # This class should be used to create a connection
 class connector(object):
@@ -389,31 +461,39 @@ class connector(object):
         self._cols = None
         self._query = None
 
-    def connect(self,host='127.0.0.1',port=5000,database='master',user='sqream',password='sqream',clustered=False,timeout=15):
+    def connect(self, host='127.0.0.1', port=5000, database='master', user='sqream', password='sqream', clustered=False,
+                timeout=15):
         # No connection yet, create a new one
         if self._sc is None:
             try:
-                sc = SqreamConn(clustered=clustered,timeout=timeout)
-                sc.create_connection(host,port)
-                sc.connect(database,user,password)
-                self._sc = sc
+                nsc = SqreamConn(clustered=clustered, timeout=timeout)
+                nsc.create_connection(host, port)
+                nsc.connect(database, user, password)
+                self._sc = nsc
+            except RuntimeError as e:
+                raise RuntimeError(e)
             except:
-                # Couldn't connect
-                raise RuntimeError("Couldn't connect to SQream")
+                print("Unexpected error:", sys.exc_info()[0])
+                raise
             return self._sc
         else:
-            raise RuntimeError("Connection already exists. You must close the current connection before creating a new one")
+            raise RuntimeError(
+                'Connection already exists. You must close the current connection before creating a new one')
+
     def last_query(self):
         return self._query
+
     def last_cols(self):
         return self._cols
+
     def close(self):
-        # Close existing connection
+        # Close existing connection, if it exists
         if self._sc is None:
             return
         else:
             self._sc.close_socket()
-    def query(self,query=None):
+
+    def query(self, query=None):
         if query is None:
             raise RuntimeError("Query is empty")
         else:
@@ -424,45 +504,51 @@ class connector(object):
                     return
                 else:
                     # Unpack
-                    columns,err = rv
-                    if err != []:
+                    columns, err = rv
+                    if err:
                         raise RuntimeError(err)
                     else:
                         self._cols = columns
                         return self._cols
-            except:
-                print "Unexpected error"
-                raise
-    def cols_data(self,cols=None):
-        if cols==None:
-            cols = self._cols
-        try:
-            return map(lambda c: c.get_column_data(),cols)
-        except:
-            raise RuntimeError("Couldn't get column data from current dataset/")
-    def cols_names(self,cols=None):
-        if cols==None:
-            # Assign cols from object if not specified
+            except BaseException as e:
+                raise RuntimeError("Unexpected error while running statement: " + str(e))
+
+    def cols_data(self, cols=None):
+        if cols == None:
             cols = self._cols
         if cols == None:
-            # Argh it's still null:
-            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
-        return map(lambda c: c.get_column_name(),cols)
+            raise RuntimeError("Last query did not return a result")
+        return list(map(lambda c: c.get_column_data(), cols))
 
-    def cols_types(self,cols=None):
-        if cols==None:
+    def cols_names(self, cols=None):
+        if cols == None:
             cols = self._cols
         if cols == None:
-            # Argh it's still null:
-            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
-        return map(lambda c: c.get_type_name(),cols)
+            raise RuntimeError("Last query did not return a result")
+        return list(map(lambda c: c.get_column_name(), cols))
 
-    def cols_to_rows(self,cols=None):
+    def cols_types(self, cols=None):
+        if cols == None:
+            cols = self._cols
+        if cols == None:
+            raise RuntimeError("Last query did not return a result")
+        return list(map(lambda c: c.get_type_name(), cols))
+
+    def cols_to_rows(self, cols=None):
         # Transpose the columns into rows
-        if cols==None:
+        if cols == None:
             cols = self._cols
         if cols == None:
-            # Argh it's still null:
-            raise RuntimeError("Last statement did not return results (did you run a statement?). This function requires a result set to operate.")
+            raise RuntimeError("Last query did not return a result")
         cursor = self.cols_data(cols)
-        return map(list, zip(*cursor))
+        return list(map(tuple, zip(*cursor)))
+
+
+if __name__ == "__main__":
+    sc = connector()
+    atexit.register(sc.close)
+    sc.connect(host='192.168.0.186', database='faa', user='sqream', password='sqream', port=5000, timeout=15)
+    qr = sc.query("""SELECT Month, SUM(Cancelled) AS Cancelled FROM ontime WHERE "CancellationCode"='B' GROUP BY Month""")
+    print(sc.cols_names())
+    print(sc.cols_types())
+    print(sc.cols_to_rows())
